@@ -152,7 +152,12 @@ def formats():
 
 @app.route('/health', methods=['GET'])
 def health():
-    return jsonify({'status': 'ok'})
+    import subprocess
+    try:
+        v = subprocess.check_output(['yt-dlp', '--version'], text=True).strip()
+    except Exception:
+        v = 'unknown'
+    return jsonify({'status': 'ok', 'yt_dlp': v})
 
 
 if __name__ == '__main__':
