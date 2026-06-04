@@ -29,6 +29,8 @@ def get_cookies(url: str):
         return os.environ.get('IG_COOKIES', '')
     if 'tiktok.com' in url:
         return os.environ.get('TT_COOKIES', '')
+    if 'youtube.com' in url or 'youtu.be' in url:
+        return os.environ.get('YT_COOKIES', '')
     return ''
 
 
