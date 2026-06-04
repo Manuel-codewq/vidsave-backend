@@ -5,24 +5,77 @@ import tempfile
 
 app = Flask(__name__)
 
-def get_ydl_opts():
+def build_cookiefile(content: str) -> str | None:
+    if not content.strip():
+        return None
+    tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8')
+    if not content.startswith('# Netscape'):
+        tmp.write("# Netscape HTTP Cookie File\n")
+    tmp.write(content)
+    tmp.flush()
+    tmp.close()
+    return tmp.name
+
+def get_ydl_opts(url: str) -> dict:
     opts = {
         'quiet': True,
         'no_warnings': True,
         'skip_download': True,
     }
 
-    # Cookies do Facebook via variável de ambiente no Railway
-    cookies = os.environ.get('FB_COOKIES', '')
-    if cookies:
-        tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False)
-        tmp.write("# Netscape HTTP Cookie File\n")
-        tmp.write(cookies)
-        tmp.flush()
-        tmp.close()
-        opts['cookiefile'] = tmp.name
+    # Selecionar cookies consoante a plataforma
+    if any(x in url for x in ['facebook.com', 'fb.watch', 'fb.com']):
+        cookie_env = os.environ.get('FB_COOKIES', '')
+    elif any(x in url for x in ['instagram.com']):
+        cookie_env = os.environ.get('IG_COOKIES', '')
+    elif any(x in url for x in ['tiktok.com']):
+        cookie_env = os.environ.get('TT_COOKIES', '')
+    else:
+        cookie_env = ''
+
+    cookiefile = build_cookiefile(cookie_env)
+    if cookiefile:
+        opts['cookiefile'] = cookiefile
 
     return opts
+
+
+def pick_formats(formats: list) -> tuple[str | None, str | None]:
+    """Retorna (hd_url, sd_url) escolhendo os melhores formatos com áudio."""
+    hd_url = None
+    sd_url = None
+
+    # Formatos progressivos (vídeo+áudio num só ficheiro) — melhores para download directo
+    progressive = [
+        f for f in formats
+        if f.get('vcodec', 'none') != 'none'
+        and f.get('acodec', 'none') != 'none'
+        and f.get('url')
+    ]
+
+    # Ordenar por resolução descendente
+    progressive.sort(key=lambda f: f.get('height') or 0, reverse=True)
+
+    for f in progressive:
+        height = f.get('height') or 0
+        url = f.get('url', '')
+        if height >= 480 and not hd_url:
+            hd_url = url
+        elif not hd_url and not sd_url:
+            sd_url = url
+        elif hd_url and not sd_url and url != hd_url:
+            sd_url = url
+        if hd_url and sd_url:
+            break
+
+    # Fallback: qualquer formato com vídeo
+    if not hd_url and not sd_url and formats:
+        for f in reversed(formats):
+            if f.get('url') and f.get('vcodec', 'none') != 'none':
+                sd_url = f['url']
+                break
+
+    return hd_url, sd_url
 
 
 @app.route('/extract', methods=['GET'])
@@ -32,49 +85,38 @@ def extract():
         return jsonify({'error': 'url required'}), 400
 
     try:
-        with yt_dlp.YoutubeDL(get_ydl_opts()) as ydl:
+        with yt_dlp.YoutubeDL(get_ydl_opts(url)) as ydl:
             info = ydl.extract_info(url, download=False)
 
-        formats = info.get('formats', [])
-        title = info.get('title', 'Video')
+        title = info.get('title') or info.get('description') or 'Video'
+        thumbnail = info.get('thumbnail') or ''
+        duration = info.get('duration')
+        uploader = info.get('uploader') or info.get('channel') or ''
 
-        hd_url = None
-        sd_url = None
+        hd_url, sd_url = pick_formats(info.get('formats', []))
 
-        for f in reversed(formats):
-            ext = f.get('ext', '')
-            vcodec = f.get('vcodec', 'none')
-            acodec = f.get('acodec', 'none')
-            height = f.get('height') or 0
-            furl = f.get('url', '')
-
-            if not furl or vcodec == 'none':
-                continue
-
-            has_audio = acodec != 'none'
-            is_mp4 = ext == 'mp4'
-
-            if has_audio and is_mp4:
-                if height >= 480 and not hd_url:
-                    hd_url = furl
-                elif not sd_url:
-                    sd_url = furl
-
+        # Fallback directo
         if not hd_url and not sd_url:
             direct = info.get('url')
             if direct:
                 sd_url = direct
 
-        result = {'title': title, 'videos': []}
-        if hd_url:
-            result['videos'].append({'quality': 'HD', 'url': hd_url})
-        if sd_url:
-            result['videos'].append({'quality': 'SD', 'url': sd_url})
-
-        if not result['videos']:
+        if not hd_url and not sd_url:
             return jsonify({'error': 'no video found'}), 404
 
-        return jsonify(result)
+        videos = []
+        if hd_url:
+            videos.append({'quality': 'HD', 'url': hd_url})
+        if sd_url:
+            videos.append({'quality': 'SD', 'url': sd_url})
+
+        return jsonify({
+            'title': title[:120],
+            'thumbnail': thumbnail,
+            'duration': duration,
+            'uploader': uploader,
+            'videos': videos
+        })
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
