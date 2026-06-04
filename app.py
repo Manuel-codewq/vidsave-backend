@@ -1,11 +1,16 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 import yt_dlp
 import os
+import uuid
+import threading
 import tempfile
 
 app = Flask(__name__)
 
-def build_cookiefile(content: str) -> str | None:
+TEMP_DIR = tempfile.gettempdir()
+
+
+def build_cookiefile(content: str):
     if not content.strip():
         return None
     tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8')
@@ -16,56 +21,27 @@ def build_cookiefile(content: str) -> str | None:
     tmp.close()
     return tmp.name
 
-def get_ydl_opts(url: str) -> dict:
-    opts = {
-        'quiet': True,
-        'no_warnings': True,
-        'skip_download': True,
-    }
 
-    # Selecionar cookies consoante a plataforma
+def get_cookies(url: str):
     if any(x in url for x in ['facebook.com', 'fb.watch', 'fb.com']):
-        cookie_env = os.environ.get('FB_COOKIES', '')
-    elif any(x in url for x in ['instagram.com']):
-        cookie_env = os.environ.get('IG_COOKIES', '')
-    elif any(x in url for x in ['tiktok.com']):
-        cookie_env = os.environ.get('TT_COOKIES', '')
-    else:
-        cookie_env = ''
-
-    cookiefile = build_cookiefile(cookie_env)
-    if cookiefile:
-        opts['cookiefile'] = cookiefile
-
-    return opts
+        return os.environ.get('FB_COOKIES', '')
+    if 'instagram.com' in url:
+        return os.environ.get('IG_COOKIES', '')
+    if 'tiktok.com' in url:
+        return os.environ.get('TT_COOKIES', '')
+    return ''
 
 
-def pick_formats(formats: list) -> tuple[str | None, str | None]:
-    """Retorna (hd_url, sd_url) — apenas formatos com vídeo E áudio no mesmo stream."""
-    # Um formato muxed tem AMBOS vcodec e acodec definidos na mesma entrada
-    muxed = [
-        f for f in formats
-        if f.get('vcodec', 'none') not in ('none', None)
-        and f.get('acodec', 'none') not in ('none', None)
-        and f.get('url')
-    ]
-    muxed.sort(key=lambda f: f.get('height') or 0, reverse=True)
-
-    hd_url = None
-    sd_url = None
-
-    for f in muxed:
-        height = f.get('height') or 0
-        url = f['url']
-        if height >= 480 and not hd_url:
-            hd_url = url
-        elif not sd_url and url != hd_url:
-            sd_url = url
-        if hd_url and sd_url:
-            break
-
-    # Se mesmo assim não encontrou nada, usar o url directo do info (yt-dlp já escolhe o melhor)
-    return hd_url, sd_url
+def cleanup_later(path: str, delay: int = 600):
+    """Apaga o ficheiro temporário após delay segundos."""
+    def _delete():
+        import time
+        time.sleep(delay)
+        try:
+            os.remove(path)
+        except Exception:
+            pass
+    threading.Thread(target=_delete, daemon=True).start()
 
 
 @app.route('/extract', methods=['GET'])
@@ -74,40 +50,81 @@ def extract():
     if not url:
         return jsonify({'error': 'url required'}), 400
 
-    try:
-        with yt_dlp.YoutubeDL(get_ydl_opts(url)) as ydl:
-            info = ydl.extract_info(url, download=False)
+    file_id = str(uuid.uuid4())
+    output_template = os.path.join(TEMP_DIR, f'{file_id}.%(ext)s')
 
-        title = info.get('title') or info.get('description') or 'Video'
+    ydl_opts = {
+        'quiet': True,
+        'no_warnings': True,
+        'outtmpl': output_template,
+        # ffmpeg está instalado — pode fazer merge de DASH (YouTube HD, etc.)
+        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best',
+        'merge_output_format': 'mp4',
+        'postprocessors': [{
+            'key': 'FFmpegVideoConvertor',
+            'preferedformat': 'mp4',
+        }],
+    }
+
+    cookie_content = get_cookies(url)
+    cookiefile = build_cookiefile(cookie_content)
+    if cookiefile:
+        ydl_opts['cookiefile'] = cookiefile
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+
+        # Encontrar o ficheiro gerado
+        output_file = os.path.join(TEMP_DIR, f'{file_id}.mp4')
+        if not os.path.exists(output_file):
+            # Tentar com outro nome que yt-dlp possa ter gerado
+            for fname in os.listdir(TEMP_DIR):
+                if fname.startswith(file_id):
+                    output_file = os.path.join(TEMP_DIR, fname)
+                    break
+
+        if not os.path.exists(output_file):
+            return jsonify({'error': 'file not generated'}), 500
+
+        cleanup_later(output_file)
+
+        title = (info.get('title') or 'Video')[:120]
         thumbnail = info.get('thumbnail') or ''
-        duration = info.get('duration')
         uploader = info.get('uploader') or info.get('channel') or ''
 
-        hd_url, sd_url = pick_formats(info.get('formats', []))
-
-        # Fallback: yt-dlp já escolheu o melhor formato com áudio no info['url']
-        if not hd_url and not sd_url:
-            sd_url = info.get('url') or info.get('webpage_url')
-
-        if not hd_url and not sd_url:
-            return jsonify({'error': 'no video found'}), 404
-
-        videos = []
-        if hd_url:
-            videos.append({'quality': 'HD', 'url': hd_url})
-        if sd_url:
-            videos.append({'quality': 'SD', 'url': sd_url})
+        base_url = request.host_url.rstrip('/')
+        download_url = f'{base_url}/download/{file_id}'
 
         return jsonify({
-            'title': title[:120],
+            'title': title,
             'thumbnail': thumbnail,
-            'duration': duration,
             'uploader': uploader,
-            'videos': videos
+            'videos': [{'quality': 'HD', 'url': download_url}]
         })
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/download/<file_id>', methods=['GET'])
+def download(file_id):
+    # Segurança: só aceitar UUIDs válidos
+    try:
+        uuid.UUID(file_id)
+    except ValueError:
+        return jsonify({'error': 'invalid id'}), 400
+
+    output_file = os.path.join(TEMP_DIR, f'{file_id}.mp4')
+    if not os.path.exists(output_file):
+        return jsonify({'error': 'file not found or expired'}), 404
+
+    return send_file(
+        output_file,
+        mimetype='video/mp4',
+        as_attachment=True,
+        download_name='video.mp4'
+    )
 
 
 @app.route('/health', methods=['GET'])
