@@ -1,7 +1,29 @@
 from flask import Flask, request, jsonify
 import yt_dlp
+import os
+import tempfile
 
 app = Flask(__name__)
+
+def get_ydl_opts():
+    opts = {
+        'quiet': True,
+        'no_warnings': True,
+        'skip_download': True,
+    }
+
+    # Cookies do Facebook via variável de ambiente no Railway
+    cookies = os.environ.get('FB_COOKIES', '')
+    if cookies:
+        tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False)
+        tmp.write("# Netscape HTTP Cookie File\n")
+        tmp.write(cookies)
+        tmp.flush()
+        tmp.close()
+        opts['cookiefile'] = tmp.name
+
+    return opts
+
 
 @app.route('/extract', methods=['GET'])
 def extract():
@@ -9,25 +31,16 @@ def extract():
     if not url:
         return jsonify({'error': 'url required'}), 400
 
-    ydl_opts = {
-        'quiet': True,
-        'no_warnings': True,
-        'skip_download': True,
-        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-    }
-
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        with yt_dlp.YoutubeDL(get_ydl_opts()) as ydl:
             info = ydl.extract_info(url, download=False)
 
         formats = info.get('formats', [])
         title = info.get('title', 'Video')
 
-        # Encontrar melhor HD e SD
         hd_url = None
         sd_url = None
 
-        # Preferir mp4 com audio
         for f in reversed(formats):
             ext = f.get('ext', '')
             vcodec = f.get('vcodec', 'none')
@@ -47,7 +60,6 @@ def extract():
                 elif not sd_url:
                     sd_url = furl
 
-        # Fallback: usar url directa do info
         if not hd_url and not sd_url:
             direct = info.get('url')
             if direct:
@@ -74,6 +86,5 @@ def health():
 
 
 if __name__ == '__main__':
-    import os
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
