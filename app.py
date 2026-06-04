@@ -129,6 +129,27 @@ def download(file_id):
     )
 
 
+@app.route('/formats', methods=['GET'])
+def formats():
+    url = request.args.get('url', '').strip()
+    if not url:
+        return jsonify({'error': 'url required'}), 400
+    ydl_opts = {'quiet': True, 'no_warnings': True, 'skip_download': True}
+    cookie_content = get_cookies(url)
+    cookiefile = build_cookiefile(cookie_content)
+    if cookiefile:
+        ydl_opts['cookiefile'] = cookiefile
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+        fmts = [{'id': f.get('format_id'), 'ext': f.get('ext'), 'height': f.get('height'),
+                 'vcodec': f.get('vcodec'), 'acodec': f.get('acodec'), 'protocol': f.get('protocol')}
+                for f in info.get('formats', [])]
+        return jsonify({'formats': fmts})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({'status': 'ok'})
