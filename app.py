@@ -93,7 +93,7 @@ def extract():
         thumbnail = info.get('thumbnail') or ''
         uploader = info.get('uploader') or info.get('channel') or ''
 
-        base_url = request.host_url.rstrip('/')
+        base_url = request.host_url.rstrip('/').replace('http://', 'https://')
         download_url = f'{base_url}/download/{file_id}'
 
         return jsonify({
