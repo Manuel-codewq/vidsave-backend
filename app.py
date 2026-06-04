@@ -60,7 +60,7 @@ def extract():
         'no_warnings': True,
         'outtmpl': output_template,
         # ffmpeg está instalado — pode fazer merge de DASH (YouTube HD, etc.)
-        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best',
+        'format': 'bestvideo+bestaudio/best',
         'merge_output_format': 'mp4',
         'postprocessors': [{
             'key': 'FFmpegVideoConvertor',
