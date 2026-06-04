@@ -40,19 +40,15 @@ def get_ydl_opts(url: str) -> dict:
     return opts
 
 
-def is_muxed(f: dict) -> bool:
-    """Formato com vídeo e áudio no mesmo ficheiro (não DASH)."""
-    has_video = f.get('vcodec', 'none') not in ('none', None)
-    has_audio = f.get('acodec', 'none') not in ('none', None)
-    protocol  = (f.get('protocol') or '').lower()
-    fmt_id    = (f.get('format_id') or '').lower()
-    not_dash  = 'dash' not in protocol and 'dash' not in fmt_id
-    return has_video and has_audio and not_dash and bool(f.get('url'))
-
-
 def pick_formats(formats: list) -> tuple[str | None, str | None]:
-    """Retorna (hd_url, sd_url) — apenas formatos muxed (vídeo+áudio juntos)."""
-    muxed = [f for f in formats if is_muxed(f)]
+    """Retorna (hd_url, sd_url) — apenas formatos com vídeo E áudio no mesmo stream."""
+    # Um formato muxed tem AMBOS vcodec e acodec definidos na mesma entrada
+    muxed = [
+        f for f in formats
+        if f.get('vcodec', 'none') not in ('none', None)
+        and f.get('acodec', 'none') not in ('none', None)
+        and f.get('url')
+    ]
     muxed.sort(key=lambda f: f.get('height') or 0, reverse=True)
 
     hd_url = None
@@ -68,13 +64,7 @@ def pick_formats(formats: list) -> tuple[str | None, str | None]:
         if hd_url and sd_url:
             break
 
-    # Fallback: se não há muxed, pegar qualquer formato com vídeo (pode não ter áudio)
-    if not hd_url and not sd_url:
-        for f in reversed(formats):
-            if f.get('url') and f.get('vcodec', 'none') not in ('none', None):
-                sd_url = f['url']
-                break
-
+    # Se mesmo assim não encontrou nada, usar o url directo do info (yt-dlp já escolhe o melhor)
     return hd_url, sd_url
 
 
@@ -95,11 +85,9 @@ def extract():
 
         hd_url, sd_url = pick_formats(info.get('formats', []))
 
-        # Fallback directo
+        # Fallback: yt-dlp já escolheu o melhor formato com áudio no info['url']
         if not hd_url and not sd_url:
-            direct = info.get('url')
-            if direct:
-                sd_url = direct
+            sd_url = info.get('url') or info.get('webpage_url')
 
         if not hd_url and not sd_url:
             return jsonify({'error': 'no video found'}), 404
