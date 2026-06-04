@@ -40,38 +40,38 @@ def get_ydl_opts(url: str) -> dict:
     return opts
 
 
+def is_muxed(f: dict) -> bool:
+    """Formato com vídeo e áudio no mesmo ficheiro (não DASH)."""
+    has_video = f.get('vcodec', 'none') not in ('none', None)
+    has_audio = f.get('acodec', 'none') not in ('none', None)
+    protocol  = (f.get('protocol') or '').lower()
+    fmt_id    = (f.get('format_id') or '').lower()
+    not_dash  = 'dash' not in protocol and 'dash' not in fmt_id
+    return has_video and has_audio and not_dash and bool(f.get('url'))
+
+
 def pick_formats(formats: list) -> tuple[str | None, str | None]:
-    """Retorna (hd_url, sd_url) escolhendo os melhores formatos com áudio."""
+    """Retorna (hd_url, sd_url) — apenas formatos muxed (vídeo+áudio juntos)."""
+    muxed = [f for f in formats if is_muxed(f)]
+    muxed.sort(key=lambda f: f.get('height') or 0, reverse=True)
+
     hd_url = None
     sd_url = None
 
-    # Formatos progressivos (vídeo+áudio num só ficheiro) — melhores para download directo
-    progressive = [
-        f for f in formats
-        if f.get('vcodec', 'none') != 'none'
-        and f.get('acodec', 'none') != 'none'
-        and f.get('url')
-    ]
-
-    # Ordenar por resolução descendente
-    progressive.sort(key=lambda f: f.get('height') or 0, reverse=True)
-
-    for f in progressive:
+    for f in muxed:
         height = f.get('height') or 0
-        url = f.get('url', '')
+        url = f['url']
         if height >= 480 and not hd_url:
             hd_url = url
-        elif not hd_url and not sd_url:
-            sd_url = url
-        elif hd_url and not sd_url and url != hd_url:
+        elif not sd_url and url != hd_url:
             sd_url = url
         if hd_url and sd_url:
             break
 
-    # Fallback: qualquer formato com vídeo
-    if not hd_url and not sd_url and formats:
+    # Fallback: se não há muxed, pegar qualquer formato com vídeo (pode não ter áudio)
+    if not hd_url and not sd_url:
         for f in reversed(formats):
-            if f.get('url') and f.get('vcodec', 'none') != 'none':
+            if f.get('url') and f.get('vcodec', 'none') not in ('none', None):
                 sd_url = f['url']
                 break
 
